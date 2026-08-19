@@ -1,4 +1,8 @@
+# Model weights are committed (see backend/app/weights/) — they are small
+# enough and the project is unusable without them.
 *.onnx
+!backend/app/weights/plate_detector.onnx
+
 app/storage/
 backend/app/storage/
 .env
