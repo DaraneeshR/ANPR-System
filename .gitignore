@@ -13,3 +13,7 @@ __pycache__/
 venv/
 dist/
 .DS_Store
+
+# Full 100-frame annotated output set — regenerate with scripts/evaluate.py.
+# The meaningful subset is committed under results/samples/.
+results/outputs/

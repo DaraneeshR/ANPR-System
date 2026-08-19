@@ -30,22 +30,42 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 RESULTS_DIR = REPO_ROOT / "results"
 OUTPUTS_DIR = RESULTS_DIR / "outputs"
 GRAPHS_DIR = RESULTS_DIR / "graphs"
-GROUND_TRUTH = Path(__file__).resolve().parent / "demo_plates.csv"
+SCRIPTS_DIR = Path(__file__).resolve().parent
+REFERENCE_CSV = SCRIPTS_DIR / "demo_plates.csv"
+GROUND_TRUTH = SCRIPTS_DIR / "ground_truth.csv"
 
 
 def load_ground_truth() -> dict[str, dict]:
-    """image filename -> {plate, ocr_conf, det_conf, valid_format}."""
-    rows: dict[str, dict] = {}
-    with GROUND_TRUTH.open(newline="", encoding="utf-8") as fh:
+    """image filename -> {plate, ref_*_conf, is_real_plate}.
+
+    Accuracy is scored against ground_truth.csv, which is hand-verified. The
+    original demo_plates.csv is EasyOCR's own output from the training notebook,
+    so scoring against it measures agreement between two OCR runs rather than
+    accuracy — it was wrong on 8 of the 29 real plates. It is still read here
+    for the reference confidence values it records.
+    """
+    reference: dict[str, dict] = {}
+    with REFERENCE_CSV.open(newline="", encoding="utf-8") as fh:
         for row in csv.DictReader(fh):
-            rows[row["image"]] = {
-                "plate": row["plate"].strip().upper(),
+            reference[row["image"]] = {
                 "ref_ocr_conf": float(row["ocr_conf"]),
                 "ref_det_conf": float(row["det_conf"]),
-                # valid_format marks the 29 frames that hold a real vehicle
-                # plate. The other 71 are dealer signage — no plate to read.
-                "is_real_plate": row["valid_format"].strip().lower() == "true",
             }
+
+    verified: dict[str, str] = {}
+    with GROUND_TRUTH.open(newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            verified[row["image"]] = row["plate"].strip().upper()
+
+    rows: dict[str, dict] = {}
+    for image, ref in reference.items():
+        # Presence in ground_truth.csv is what marks a frame as holding a real
+        # vehicle plate. The other 71 frames are number-plate dealer signage.
+        rows[image] = {
+            "plate": verified.get(image, ""),
+            "is_real_plate": image in verified,
+            **ref,
+        }
     return rows
 
 
@@ -82,13 +102,16 @@ def annotate(frame: np.ndarray, results: list[dict], truth: str | None) -> np.nd
         label = f"{r['plate'] or '(no text)'}  det {r['det_conf']:.2f}  ocr {r['ocr_conf']:.2f}"
         (tw, th), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
 
-        # Keep the label inside the frame when the box hugs the top edge.
+        # Keep the label inside the frame on all sides: flip below the box when
+        # it would clip the top edge, and shift left when it would run off the
+        # right edge.
         ty = y1 - 8 if y1 - th - base - 8 >= 0 else y2 + th + base + 8
+        tx = min(x1, max(0, out.shape[1] - tw - 8))
         cv2.rectangle(
-            out, (x1, ty - th - base), (x1 + tw + 6, ty + base), (0, 220, 0), -1
+            out, (tx, ty - th - base), (tx + tw + 6, ty + base), (0, 220, 0), -1
         )
         cv2.putText(
-            out, label, (x1 + 3, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2
+            out, label, (tx + 3, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2
         )
 
     if truth:

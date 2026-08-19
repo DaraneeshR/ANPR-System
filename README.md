@@ -46,8 +46,10 @@ plate.
 
 ## Dataset Used
 
-The detector was trained in [`notebooks/ANPR_Train_Detector_Colab.ipynb`](notebooks/ANPR_Train_Detector_Colab.ipynb),
-which supports two interchangeable sources. Both are public and free.
+The detector was trained in [`notebooks/ANPR_Train_Detector_Colab.ipynb`](notebooks/ANPR_Train_Detector_Colab.ipynb).
+The notebook supports two interchangeable sources; **the shipped model was
+trained on Path A**, with all three Kaggle datasets merged into a single pool.
+Path B is documented as a working alternative but was not used.
 
 **Path A — Kaggle (Indian plates)**
 
@@ -57,7 +59,7 @@ which supports two interchangeable sources. Both are public and free.
 | Indian Vehicle Dataset | [`saisirishan/indian-vehicle-dataset`](https://www.kaggle.com/datasets/saisirishan/indian-vehicle-dataset) |
 | Indian Number Plates Dataset | [`dataclusterlabs/indian-number-plates-dataset`](https://www.kaggle.com/datasets/dataclusterlabs/indian-number-plates-dataset) |
 
-**Path B — Roboflow Universe (≈10 000 general plates)**
+**Path B — Roboflow Universe (≈10 000 general plates) — alternative, not used here**
 
 [`roboflow-universe-projects/license-plate-recognition-rxg4e`](https://universe.roboflow.com/roboflow-universe-projects/license-plate-recognition-rxg4e), version 4, YOLOv8 export.
 
@@ -66,18 +68,32 @@ format (YOLO `.txt`, Pascal VOC `.xml`, 4-point polygon, or COCO `.json`),
 converts everything to single-class YOLO format (`0 = plate`), and merges the
 sources into one pool.
 
-**As shipped**, the model was trained on **1 397 images** with an 85/15 train/val
-split, plus a **100-image holdout** that the model never saw. That holdout is
-committed to this repository as [`backend/demo_frames/`](backend/demo_frames/)
-and is the evaluation set for every number in [Results](#results).
+After format conversion and de-duplication the three Kaggle sets yielded a pool
+of **1 743 usable annotated images**. The notebook's configured cap of 2 500 was
+therefore never reached — the pool was the binding constraint, not the cap. That
+pool was split with `SEED = 42`:
+
+| Split | Images | Purpose |
+| --- | --- | --- |
+| Train | 1 397 | gradient updates |
+| Validation | 246 | per-epoch mAP, early stopping (`patience=15`) |
+| **Holdout** | **100** | never seen in training *or* validation — all reported results |
+
+The holdout is committed to this repository as
+[`backend/demo_frames/`](backend/demo_frames/) and is the evaluation set for
+every number in [Results](#results). Holding out a third split, rather than
+reporting validation scores, matters here: validation data influenced early
+stopping, so validation mAP is an optimistic estimate. Every figure below comes
+from data that touched no part of training.
 
 > **Note on the holdout.** Only **29 of the 100** holdout images contain a real
 > vehicle plate. The remaining 71 are scraped number-plate *dealer signage* —
 > shop hoardings and advertising boards. They are retained deliberately: they are
 > genuine hard negatives that show how the system behaves on plate-shaped objects
 > that are not plates. All recognition accuracy figures are reported against the
-> 29-image real-plate subset, with the ground truth in
-> [`backend/scripts/demo_plates.csv`](backend/scripts/demo_plates.csv).
+> 29-image real-plate subset, with hand-verified ground truth in
+> [`backend/scripts/ground_truth.csv`](backend/scripts/ground_truth.csv) — see
+> [A note on the ground truth](#a-note-on-the-ground-truth).
 
 ## Technologies / Libraries Used
 
@@ -127,9 +143,10 @@ Raw ONNX output is `[1, 5, 8400]`, transposed to 8 400 rows of
 `confidence > 0.25`, then passed through `cv2.dnn.NMSBoxes(..., 0.25, 0.45)`.
 
 **Non-Maximum Suppression is essential here** — without it a single plate yields
-8–13 overlapping boxes. With it, the holdout set collapses to exactly one box
-per plate. Surviving boxes are rescaled to the original frame dimensions and
-clamped to its bounds before cropping.
+8–13 overlapping boxes. With it, 94 of the 100 holdout frames collapse to exactly
+one box; the remaining 6 return two, and no frame returns more. Surviving boxes
+are rescaled to the original frame dimensions and clamped to its bounds before
+cropping.
 
 ### 4. Character Recognition
 
@@ -287,6 +304,20 @@ python scripts/evaluate.py
 Runs all 100 holdout frames and writes to `results/`: annotated output images,
 performance graphs, `metrics.md`, and per-frame `predictions.csv`.
 
+### Troubleshooting
+
+**Port 8000 already in use.** Uvicorn binds IPv4 `127.0.0.1:8000`. If another
+service (a Docker container, for instance) holds `*:8000` on IPv6, requests to
+`localhost:8000` may resolve to `::1` and reach the wrong application while
+uvicorn appears to start normally. Test with `http://127.0.0.1:8000` explicitly,
+or check with `lsof -nP -iTCP:8000 -sTCP:LISTEN`.
+
+**`pip install` fails building numpy or easyocr.** You are not on Python 3.11.
+Check with `python --version` inside the activated venv.
+
+**Backend exits at startup with an onnxruntime error.** `plate_detector.onnx` is
+missing or corrupt — see [Step 0](#0-model-weights).
+
 ### Using the dashboard
 
 **Live** — "Start feed" walks the demo frames one every 2 s, showing each verdict
@@ -326,51 +357,120 @@ Plates that demonstrate each verdict:
 
 ## Results
 
-All figures measured on the **100 held-out images** the model never saw during
-training. Full tables, graphs, and per-frame numbers are in
-[`results/`](results/), regenerated by `python scripts/evaluate.py`.
+All figures below were **measured on this repository**, not copied from the
+training run. Reproduce them with `python scripts/evaluate.py`, which writes
+[`results/`](results/) — annotated outputs, graphs, `metrics.md`, and per-frame
+`predictions.csv`. Hardware: Apple Silicon CPU, no GPU.
 
 ### Detector training metrics
 
+Reported by Ultralytics at the end of training, against the 246-image validation
+split (recorded in `model_info.txt`):
+
 | Metric | Value |
 | --- | --- |
-| mAP@50 | **0.9834** |
-| mAP@50-95 | **0.8193** |
+| mAP@50 | 0.9834 |
+| mAP@50-95 | 0.8193 |
 | Precision | 0.9834 |
 | Recall | 0.9681 |
 
-### Pipeline performance on the holdout set
+### A note on the ground truth
+
+`scripts/demo_plates.csv` — the plate list produced by the training notebook —
+is **not** reliable ground truth. It was generated by running EasyOCR over the
+holdout frames, so scoring against it measures agreement between two OCR runs
+rather than accuracy.
+
+It is demonstrably wrong on **8 of the 29** real plates (28%). Ten holdout frames
+carry their true plate in the filename (`car-wbs-MH12DE1433_00000.jpg`), which
+makes the errors verifiable independently:
+
+| `demo_plates.csv` says | Actually | Error |
+| --- | --- | --- |
+| `NP32KN7325` | UP32KN7325 | N → U |
+| `MH2OCS4946` | MH20CS4946 | letter O → digit 0 |
+| `WH42DE1433` | MH12DE1433 | W → M, 4 → 1 |
+| `HO5DS8679` | MH05DS8679 | dropped leading M |
+| `MH47H2829` | MH47N2829 | H → N |
+| `KI12BT6482` | MH02BT6482 | three characters |
+| `KH02BT6482` | MH02BT6482 | K → M |
+| `MK0IBT0050` | MH01BT0050 | K → H, I → 1 |
+
+All 29 real plates were therefore re-labelled by hand into
+[`scripts/ground_truth.csv`](backend/scripts/ground_truth.csv) — 7 confirmed from
+filenames, 22 read visually from upscaled crops. **Every accuracy figure below is
+scored against that file.** Scoring against the original CSV instead would have
+reported 72%, overstating real performance by 10 points.
+
+### Detection
 
 | Metric | Value |
 | --- | --- |
-| Frames producing a detection | 100 / 100 (100%) |
-| Boxes per plate after NMS | 1 |
-| Detection latency | ~66 ms/frame (CPU) |
-| Full pipeline latency | ~530 ms/frame (CPU, detection + OCR) |
-| **Plate text exact match** | **22 / 29 (76%)** on the real-plate subset |
+| Frames producing a detection | **100 / 100 (100%)** |
+| Frames with exactly 1 box after NMS | 94 |
+| Maximum boxes on any frame | 2 |
+| Mean detection confidence | 0.795 |
+
+### Recognition — 29 real-plate frames
+
+| Metric | Value |
+| --- | --- |
+| **Exact plate match** | **18 / 29 (62%)** |
+| **Mean character accuracy** | **91.6%** |
+| Near misses (≥80% characters correct) | 7 |
+| Mean OCR confidence | 0.605 |
+
+### Latency — full pipeline, CPU
+
+| Metric | Value |
+| --- | --- |
+| Mean per frame | 119 ms |
+| 95th percentile | 182 ms |
 
 ### Interpretation
 
-Detection is effectively solved on this data — every frame yields a box, and NMS
-reliably collapses the 8–13 raw proposals to one. The bottleneck is recognition:
-76% exact match, where the dominant failure mode is **single-character
-confusion** (`KI12BT6482` read as `NI12BI6482`) rather than wholesale
-misreading. Character-level accuracy is therefore substantially higher than the
-exact-match figure suggests.
+**Detection is effectively solved on this data.** Every frame yields a box, mean
+confidence 0.795, and NMS reduces the 8–13 raw proposals to a single box on 94%
+of frames. The detector is not the bottleneck.
 
-This is precisely why the `corrected_plate` field exists: each correction an
-operator makes captures one of these confusions as labelled retraining data,
-targeted at the exact characters the model confuses.
+**Recognition is the bottleneck, and the gap between the two accuracy figures is
+the whole story.** 62% of plates are read perfectly, but mean character accuracy
+is 91.6% — meaning most failures are *one or two characters* in an otherwise
+correct read, not garbage output. Every miss is a confusion between visually
+similar glyphs:
 
-Latency is dominated by OCR — ~66 ms of the ~530 ms budget is detection, the
-remaining ~464 ms is EasyOCR on CPU. This is the strongest argument for replacing
-EasyOCR with a purpose-built CRNN: a plate-specific model would be both faster
-and more accurate on the confusable character set.
+| Confusion | Example |
+| --- | --- |
+| `M` → `H` / `V` / `N` | MH47N4570 → VH47N4570 |
+| `0` → `O`, `1` → `I` | MH20CS4946 → MH2OCS4946 |
+| `6` → `8` | MH02BT6482 → MH02BT8482 |
+
+Because exact match is what gates an access decision, a single confused character
+turns an authorised vehicle into `unknown`. That is why the system logs
+`corrected_plate` separately from the model's reading: each operator correction
+captures one of these confusions as labelled retraining data aimed precisely at
+the characters the model gets wrong.
+
+One failure is not a confusion at all but a parsing bug: `MH14EU3498` is read as
+`INDHH14EU3498`, because the plate's blue "IND" country strip is inside the crop
+and gets concatenated. Stripping a leading `IND` is a small, targeted fix worth
+roughly 3 percentage points.
+
+**Latency is dominated by OCR.** At ~119 ms mean per frame the system is
+comfortably real-time for gate use, where a vehicle is stationary for seconds.
 
 ### Sample outputs
 
-Annotated detections for all 100 frames are in [`results/outputs/`](results/outputs/),
-and the performance graphs in [`results/graphs/`](results/graphs/).
+[`results/samples/`](results/samples/) holds annotated detections for all 29
+real-plate frames plus two signage hard negatives — each showing the predicted
+box, the plate text, both confidence scores, and the expected value. Graphs are
+in [`results/graphs/`](results/graphs/), and the full 100-frame set regenerates
+into `results/outputs/` with `python scripts/evaluate.py`.
+
+![Recognition outcomes](results/graphs/recognition_outcomes.png)
+![Detection confidence](results/graphs/detection_confidence.png)
+![OCR confidence](results/graphs/ocr_confidence.png)
+![Latency](results/graphs/latency.png)
 
 ---
 
@@ -380,9 +480,10 @@ and the performance graphs in [`results/graphs/`](results/graphs/).
 
 - Exact-match only — a single misread character produces `unknown` for an
   authorised vehicle.
-- OCR accuracy of 76% exact match is below what unattended gate operation needs.
+- OCR exact-match accuracy of 62% is below what unattended gate operation needs,
+  though character accuracy is 91.6% — most failures are one confused glyph.
 - Single-frame processing; no video input or multi-frame voting.
-- CPU-only, ~530 ms per frame — adequate for a gate, not for highway speeds.
+- CPU-only, ~119 ms per frame — fine for a gate, not for highway-speed capture.
 - No authentication on the dashboard.
 - Evaluated on 29 real-plate images, which is a small test set.
 
@@ -423,12 +524,17 @@ PyTorch from the project completely.
 │   ├── scripts/
 │   │   ├── evaluate.py                   # regenerates everything in results/
 │   │   ├── seed_demo.py
-│   │   └── demo_plates.csv               # holdout ground truth
+│   │   ├── ground_truth.csv              # hand-verified plates (scoring)
+│   │   └── demo_plates.csv               # notebook's OCR output (unreliable)
 │   └── requirements.txt
 ├── frontend/src/
 │   ├── pages/{Live,Logs,Registry}.jsx
 │   └── components/
-├── results/                              # graphs, tables, annotated outputs
+├── results/
+│   ├── graphs/                           # performance charts
+│   ├── samples/                          # annotated sample outputs
+│   ├── metrics.md                        # results tables
+│   └── predictions.csv                   # per-frame raw numbers
 ├── model_info.txt
 └── docker-compose.yml
 ```
