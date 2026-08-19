@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: anpr_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: anpr
+      POSTGRES_PASSWORD: anpr
+      POSTGRES_DB: anpr
+    # host 5436 -> container 5432 (5432-5435 are taken by other local projects)
+    ports:
+      - "5436:5432"
+    volumes:
+      - anpr_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anpr -d anpr"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  anpr_pgdata:
